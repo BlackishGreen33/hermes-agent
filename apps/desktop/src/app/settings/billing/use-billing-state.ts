@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { fmtDate } from '@/lib/time'
+import { FREE_TIER_MODEL } from '@/store/free-tier'
+import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 
 import type { BillingRefusal, BillingResult } from './api'
 import { useBillingApi } from './api'
@@ -11,25 +13,40 @@ export const EMPTY_BILLING_VALUE = '—'
 export const FALLBACK_PORTAL_BILLING_URL = 'https://portal.nousresearch.com/billing'
 export const FALLBACK_PORTAL_URL = 'https://portal.nousresearch.com'
 
+// The billing endpoint is the authoritative source of truth for balance / cap /
+// plan — the inference `x-nous-credits-*` headers are best-effort and can drift
+// out of sync (notably in team/org accounts where another member's spend moves
+// the shared balance without ever touching THIS client's headers). So the page
+// never trusts a cache: `staleTime: 0` + `refetchOnMount: 'always'` force a
+// fresh fetch every time it opens or regains focus, and it keeps polling every
+// 30s while mounted (react-query only ticks an active observer; it pauses when
+// the window is backgrounded — refetchIntervalInBackground defaults to false).
+// A `credits.*` notice crossing additionally invalidates ['billing','state'] to
+// pull the change in immediately rather than waiting for the next poll tick.
 const BILLING_QUERY_OPTIONS = {
+  refetchInterval: 30_000,
+  refetchOnMount: 'always',
   refetchOnWindowFocus: true,
   retry: false,
-  staleTime: 30_000
+  staleTime: 0
 } as const
 
 export interface BillingSummaryItemView {
-  label: 'Auto-refill' | 'Balance' | 'Plan'
+  label: 'Auto-refill' | 'Balance' | 'Connectors' | 'Model' | 'Plan'
   tone?: 'muted' | 'primary'
   value: string
 }
 
 export interface BillingNoticeView {
-  action?: {
-    label: string
-    url: string
-  }
+  /** Either an external portal hop (`url`) or an in-app action (`onSelect`) —
+   *  a discriminated pair, so a consumer never has to guard for "both" or
+   *  "neither". */
+  action?:
+    { label: string; onSelect: () => void; url?: undefined } | { label: string; onSelect?: undefined; url: string }
   message: string
   title: string
+  /** `warn` = an actionable blocker (e.g. no card); `info` = neutral guidance. */
+  tone?: 'info' | 'warn'
 }
 
 export interface BillingRowActionView {
@@ -68,8 +85,7 @@ export interface BillingAccountRowView {
  * (the whole plan lapses), so the grid shows no marker for it.
  */
 export type PendingPlanTransition =
-  | { kind: 'cancellation'; when: string }
-  | { kind: 'downgrade'; tierName: string; when: string }
+  { kind: 'cancellation'; when: string } | { kind: 'downgrade'; tierName: string; when: string }
 
 /**
  * The current-plan summary that replaces the old subscription row. Carries EITHER
@@ -83,7 +99,18 @@ export type BillingPlanCardView = {
   pending?: PendingPlanTransition
   price?: string
   tierName: string
-} & ({ action: { label: string }; link?: undefined } | { action?: undefined; link: { label: string; url: string } })
+} & (
+  | {
+      // `onSelect` overrides the card's default "open the plans grid" action —
+      // the free-tier card signs in instead. Absent = the plans grid.
+      action: { label: string; onSelect?: () => void }
+      link?: undefined
+    }
+  | { action?: undefined; link: { label: string; url: string } }
+  // The free-tier card is the "what you get" text alone: the page's one Sign in lives on the
+  // notice above it, so the card carries neither an action nor a link.
+  | { action?: undefined; link?: undefined }
+)
 
 interface BillingPlanTierBase {
   creditsDisplay?: string
@@ -124,9 +151,11 @@ export interface BillingView {
   paymentRow?: BillingAccountRowView
   /** Current-plan card (Plan section). Absent until billing.state resolves. */
   plan?: BillingPlanCardView
+  /** Small print under the Plan section. Only the free-tier view sets it. */
+  planFootnote?: string
   /** Automatic-refill section row. */
   refillRow?: BillingAccountRowView
-  status: 'loading' | 'logged_out' | 'normal' | 'refusal'
+  status: 'free_tier' | 'loading' | 'logged_out' | 'normal' | 'refusal'
   summary: BillingSummaryItemView[]
   /** Live tier catalog for the plans sub-view (empty when unavailable). */
   tiers: BillingPlanTierView[]
@@ -183,6 +212,13 @@ export function deriveBillingView(
   const billing = stateResult.data
   const subscription = subscriptionResult?.ok ? subscriptionResult.data : null
 
+  // Read BEFORE the logged-out branch: a free-tier install has no account, so
+  // `logged_in` is false and the generic "connect your account" notice would
+  // otherwise win and tell the user to go to the portal.
+  if (billing.free_tier) {
+    return freeTierView(billing)
+  }
+
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
       notice: {
@@ -207,7 +243,7 @@ export function deriveBillingView(
   const tiers = derivePlanTiers(subscription, billing.portal_url, capable, pending)
 
   return {
-    notice: undefined,
+    notice: noCardNotice(billing),
     paymentRow: paymentMethodRow(billing),
     plan: derivePlanCard(billing, subscription, subscriptionResult, tiers, capable, pending),
     refillRow: autoReloadRow(billing),
@@ -276,32 +312,44 @@ export function formatBillingDate(value?: null | string): string {
   return fmtDate.format(date)
 }
 
-export function formatUsageUpdatedAgo(updatedAt: number, now: number): string {
-  const elapsedSeconds = Math.max(0, Math.floor((now - updatedAt) / 1000))
-
-  if (elapsedSeconds < 1) {
-    return 'just now'
-  }
-
-  if (elapsedSeconds < 60) {
-    return `${elapsedSeconds}s ago`
-  }
-
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60)
-
-  if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m ago`
-  }
-
-  return `${Math.floor(elapsedMinutes / 60)}h ago`
-}
-
 function emptySummary(): BillingSummaryItemView[] {
   return [
     { label: 'Balance', value: EMPTY_BILLING_VALUE },
     { label: 'Plan', value: EMPTY_BILLING_VALUE },
     { label: 'Auto-refill', value: EMPTY_BILLING_VALUE }
   ]
+}
+
+/**
+ * The no-account state: nothing is owed, nothing is owned, and every money
+ * control would be a lie. So the page collapses to one notice, a three-item
+ * summary, and a single plan card whose only action is signing in — no payment,
+ * credits, auto-refill or usage sections at all.
+ */
+function freeTierView(billing: BillingStateResponse): BillingView {
+  return {
+    notice: {
+      action: { label: 'Sign in', onSelect: openFreeTierSignIn },
+      message: 'Sign in with a Nous account to unlock more models and tools.',
+      title: "You're on the Nous free tier",
+      tone: 'info'
+    },
+    plan: {
+      caption:
+        'Runs on nous/welcome with connectors included. Signing in keeps your connectors and adds the tools that need an account and every other model.',
+      tierName: 'Nous · free tier'
+    },
+    planFootnote:
+      'The free tier has no balance and nothing to pay. Payment and usage appear when you sign in with a Nous account.',
+    status: 'free_tier',
+    summary: [
+      { label: 'Plan', value: 'Free tier' },
+      { label: 'Model', value: billing.free_tier_model ?? FREE_TIER_MODEL },
+      { label: 'Connectors', tone: 'primary', value: 'Included' }
+    ],
+    tiers: [],
+    usageRows: []
+  }
 }
 
 function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
@@ -311,7 +359,24 @@ function refusalNotice(refusal: BillingRefusal): BillingNoticeView {
   return {
     action: portalUrl ? { label: 'Open portal ↗', url: portalUrl } : undefined,
     message: resolved.message,
-    title: resolved.title
+    title: resolved.title,
+    tone: 'warn'
+  }
+}
+
+// A logged-in account with no card can't buy credits or manage auto-refill, and
+// every one of those controls disables silently — so lead the page with a single
+// warn banner that names the blocker and links straight to the fix.
+function noCardNotice(billing: BillingStateResponse): BillingNoticeView | undefined {
+  if (billing.card) {
+    return undefined
+  }
+
+  return {
+    action: { label: 'Add card ↗', url: billing.portal_url ?? FALLBACK_PORTAL_BILLING_URL },
+    message: 'Buying top-up credits and auto-refill stay disabled until a card is on file. Add one on the portal.',
+    title: 'No payment method on file',
+    tone: 'warn'
   }
 }
 
@@ -530,17 +595,19 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
   const card = billing.card
 
   if (!card) {
+    // No card → a single "Add payment method" link, the way every other app does
+    // it. The reason (buys/auto-refill are blocked) already leads the page as a
+    // notice, so the row stays a bare call-to-action with no redundant status text.
     return {
-      action: { label: 'Update ↗', url: portalUrl },
-      description: 'Add a payment method on the portal before buying top-up credits.',
+      action: { label: 'Add payment method', url: portalUrl },
+      description: '',
       id: 'payment_method',
-      title: 'Payment method',
-      value: 'No card on file'
+      title: 'Payment method'
     }
   }
 
   return {
-    action: { label: 'Update ↗', url: portalUrl },
+    action: { label: 'Update', url: portalUrl },
     description: 'Manage the card used for top-ups and subscription renewals.',
     id: 'payment_method',
     title: 'Payment method',
@@ -550,14 +617,13 @@ function paymentMethodRow(billing: BillingStateResponse): BillingAccountRowView 
 
 function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
   if (!billing.card) {
+    // The no-card blocker is already spelled out by the page-level warn banner
+    // (noCardNotice); repeating it here — emoji and all — just clutters the row,
+    // so keep the plain "what buying does" line and let the controls sit disabled.
     return {
       action: { disabled: true, label: 'Buy' },
       chips: billing.charge_presets.map(amount => ({ disabled: true, label: formatMoney(amount) })),
-      description: resolveRefusal({
-        kind: 'no_payment_method',
-        message: '',
-        portalUrl: billing.portal_url ?? undefined
-      }).message,
+      description: 'A single charge on your card, added to your balance today.',
       id: 'buy_credits',
       title: 'Buy credits now'
     }

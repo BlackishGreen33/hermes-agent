@@ -147,11 +147,14 @@ describe('deriveBillingView', () => {
 
     expect(buyCredits).toMatchObject({
       action: { disabled: true, label: 'Buy' },
-      description:
-        '💳 No saved card for terminal charges yet. Set one up on the portal ' +
-        "(one-time credit buys don't save a reusable card)."
+      // The no-card blocker is explained once by the page-level notice, not
+      // duplicated (emoji and all) into the row description.
+      description: 'A single charge on your card, added to your balance today.'
     })
+    expect(buyCredits?.description).not.toContain('💳')
     expect(buyCredits?.chips?.map(chip => chip.disabled)).toEqual([true, true, true])
+    // The page still leads with the warn banner naming the blocker + fix.
+    expect(view.notice).toMatchObject({ title: 'No payment method on file', tone: 'warn' })
   })
 
   it('derives a calm logged-out card with no account or usage rows', () => {
@@ -165,6 +168,32 @@ describe('deriveBillingView', () => {
     expect(view.paymentRow).toBeUndefined()
     expect(view.topupRow).toBeUndefined()
     expect(view.refillRow).toBeUndefined()
+    expect(view.usageRows).toEqual([])
+  })
+
+  it('derives the free-tier view before the logged-out one, with nothing to pay', () => {
+    // A free-tier install is logged_in:false, so this branch must win — otherwise
+    // the generic "connect your account" notice sends the user to the portal.
+    const view = deriveBillingView(
+      okBilling({ ...loggedOutBillingState, free_tier: true, free_tier_model: 'nous/welcome' }),
+      okSubscription(loggedOutSubscriptionState)
+    )
+
+    expect(view.status).toBe('free_tier')
+    expect(view.notice).toMatchObject({ title: "You're on the Nous free tier", tone: 'info' })
+    expect(view.notice?.action?.label).toBe('Sign in')
+    expect(view.summary).toEqual([
+      { label: 'Plan', value: 'Free tier' },
+      { label: 'Model', value: 'nous/welcome' },
+      { label: 'Connectors', tone: 'primary', value: 'Included' }
+    ])
+    expect(view.plan).toMatchObject({ tierName: 'Nous · free tier' })
+    expect(view.plan?.action).toBeUndefined()
+    expect(view.planFootnote).toContain('no balance and nothing to pay')
+    expect(view.paymentRow).toBeUndefined()
+    expect(view.topupRow).toBeUndefined()
+    expect(view.refillRow).toBeUndefined()
+    expect(view.tiers).toEqual([])
     expect(view.usageRows).toEqual([])
   })
 
