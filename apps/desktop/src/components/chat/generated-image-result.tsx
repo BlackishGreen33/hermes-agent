@@ -19,7 +19,13 @@ const ASPECT_HINTS: Record<string, number> = {
 }
 
 function hintedRatio(aspectRatio?: string): number {
-  return ASPECT_HINTS[String(aspectRatio ?? '').toLowerCase().trim()] ?? ASPECT_HINTS.landscape
+  return (
+    ASPECT_HINTS[
+      String(aspectRatio ?? '')
+        .toLowerCase()
+        .trim()
+    ] ?? ASPECT_HINTS.landscape
+  )
 }
 
 function isInlineSrc(path: string): boolean {
@@ -90,7 +96,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   if (failed && image) {
     return (
       <a
-        className="mt-2 inline-block font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        className="mt-2 ref inline-block wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()
@@ -128,9 +134,9 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         )}
         {src && (
           <button
+            aria-label={copy.openImage}
             className="absolute inset-0 block size-full cursor-zoom-in"
             onClick={() => setLightboxOpen(true)}
-            title={copy.openImage}
             type="button"
           >
             <img

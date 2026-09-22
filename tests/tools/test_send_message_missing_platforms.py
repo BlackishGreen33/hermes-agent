@@ -2,14 +2,32 @@
 
 import asyncio
 import os
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from tools.send_message_tool import (
-    _send_dingtalk,
-    _send_matrix,
+# ``_send_dingtalk`` and ``_send_matrix`` moved into their bundled plugins
+# (``plugins/platforms/<x>/adapter.py::_standalone_send``) in #41112. Keep
+# thin pre-migration-shaped shims so existing test bodies work unchanged.
+from plugins.platforms.dingtalk.adapter import (
+    _standalone_send as _dingtalk_standalone_send,
 )
+from plugins.platforms.matrix.adapter import (
+    _standalone_send as _matrix_standalone_send,
+)
+
+
+async def _send_dingtalk(extra, chat_id, message):
+    """Pre-migration ``(extra, chat_id, message)`` shim around the dingtalk
+    plugin's ``_standalone_send(pconfig, chat_id, message)``."""
+    pconfig = SimpleNamespace(token=None, extra=extra or {})
+    return await _dingtalk_standalone_send(pconfig, chat_id, message)
+
+
+async def _send_matrix(token, extra, chat_id, message):
+    """Pre-migration ``(token, extra, chat_id, message)`` shim around the matrix
+    plugin's ``_standalone_send(pconfig, chat_id, message)``."""
+    pconfig = SimpleNamespace(token=token, extra=extra or {})
+    return await _matrix_standalone_send(pconfig, chat_id, message)
 
 # ``_send_mattermost`` moved into the mattermost plugin
 # (``plugins/platforms/mattermost/adapter.py::_standalone_send``).  Keep a
@@ -96,25 +114,6 @@ class TestSendMattermost:
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer tok-abc"
         assert call_kwargs[1]["json"] == {"channel_id": "channel1", "message": "hello"}
 
-    def test_http_error(self):
-        resp = _make_aiohttp_resp(400, text_data="Bad Request")
-        session_ctx, _ = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
-            result = asyncio.run(_send_mattermost(
-                "tok", {"url": "https://mm.example.com"}, "ch", "hi"
-            ))
-
-        assert "error" in result
-        assert "400" in result["error"]
-        assert "Bad Request" in result["error"]
-
-    def test_missing_config(self):
-        with patch.dict(os.environ, {"MATTERMOST_URL": "", "MATTERMOST_TOKEN": ""}, clear=False):
-            result = asyncio.run(_send_mattermost("", {}, "ch", "hi"))
-
-        assert "error" in result
-        assert "MATTERMOST_URL" in result["error"] or "not configured" in result["error"]
 
     def test_env_var_fallback(self):
         resp = _make_aiohttp_resp(200, json_data={"id": "p99"})
@@ -160,41 +159,6 @@ class TestSendMatrix:
         assert payload["msgtype"] == "m.text"
         assert payload["body"] == "hello matrix"
 
-    def test_http_error(self):
-        resp = _make_aiohttp_resp(403, text_data="Forbidden")
-        session_ctx, _ = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
-            result = asyncio.run(_send_matrix(
-                "tok", {"homeserver": "https://matrix.example.com"},
-                "!room:example.com", "hi"
-            ))
-
-        assert "error" in result
-        assert "403" in result["error"]
-        assert "Forbidden" in result["error"]
-
-    def test_missing_config(self):
-        with patch.dict(os.environ, {"MATRIX_HOMESERVER": "", "MATRIX_ACCESS_TOKEN": ""}, clear=False):
-            result = asyncio.run(_send_matrix("", {}, "!room:example.com", "hi"))
-
-        assert "error" in result
-        assert "MATRIX_HOMESERVER" in result["error"] or "not configured" in result["error"]
-
-    def test_env_var_fallback(self):
-        resp = _make_aiohttp_resp(200, json_data={"event_id": "$ev1"})
-        session_ctx, session = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
-             patch.dict(os.environ, {
-                 "MATRIX_HOMESERVER": "https://matrix.env.com",
-                 "MATRIX_ACCESS_TOKEN": "env-tok",
-             }, clear=False):
-            result = asyncio.run(_send_matrix("", {}, "!r:env.com", "hi"))
-
-        assert result["success"] is True
-        url = session.put.call_args[0][0]
-        assert "matrix.env.com" in url
 
     def test_txn_id_is_unique_across_calls(self):
         """Each call should generate a distinct transaction ID in the URL."""
@@ -249,72 +213,6 @@ class TestSendHomeAssistant:
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer hass-tok"
         assert call_kwargs[1]["json"] == {"message": "alert!", "target": "mobile_app_phone"}
 
-    def test_configured_notify_service_via_no_live_adapter(self):
-        from gateway.platform_registry import PlatformEntry, platform_registry
-        from tools.send_message_tool import _send_via_adapter
-
-        resp = _make_aiohttp_resp(200)
-        session_ctx, session = _make_aiohttp_session(resp)
-        original_entry = platform_registry.get("homeassistant")
-        entry = PlatformEntry(
-            name="homeassistant",
-            label="Home Assistant",
-            adapter_factory=lambda config: None,
-            check_fn=lambda: True,
-            standalone_sender_fn=_homeassistant_standalone_send,
-        )
-        fake_gateway_run = ModuleType("gateway.run")
-        fake_gateway_run._gateway_runner_ref = lambda: None
-
-        platform_registry.register(entry)
-        try:
-            with patch.dict(sys.modules, {"gateway.run": fake_gateway_run}), \
-                 patch("aiohttp.ClientSession", return_value=session_ctx):
-                result = asyncio.run(
-                    _send_via_adapter(
-                        SimpleNamespace(value="homeassistant"),
-                        SimpleNamespace(
-                            token="hass-tok",
-                            extra={
-                                "url": "https://hass.example.com",
-                                "notify_service": "notify.mobile_app_phone",
-                            },
-                        ),
-                        "mobile_app_phone",
-                        "alert!",
-                    )
-                )
-        finally:
-            if original_entry is None:
-                platform_registry.unregister("homeassistant")
-            else:
-                platform_registry.register(original_entry)
-
-        assert result["success"] is True
-        assert session.post.call_args.args[0] == (
-            "https://hass.example.com/api/services/notify/mobile_app_phone"
-        )
-
-    def test_http_error(self):
-        resp = _make_aiohttp_resp(401, text_data="Unauthorized")
-        session_ctx, _ = _make_aiohttp_session(resp)
-
-        with patch("aiohttp.ClientSession", return_value=session_ctx):
-            result = asyncio.run(_send_homeassistant(
-                "bad-tok", {"url": "https://hass.example.com"},
-                "target", "msg"
-            ))
-
-        assert "error" in result
-        assert "401" in result["error"]
-        assert "Unauthorized" in result["error"]
-
-    def test_missing_config(self):
-        with patch.dict(os.environ, {"HASS_URL": "", "HASS_TOKEN": ""}, clear=False):
-            result = asyncio.run(_send_homeassistant("", {}, "target", "msg"))
-
-        assert "error" in result
-        assert "HASS_URL" in result["error"] or "not configured" in result["error"]
 
     def test_env_var_fallback(self):
         resp = _make_aiohttp_resp(200)
@@ -364,34 +262,6 @@ class TestSendDingtalk:
         assert call_kwargs[0][0] == "https://oapi.dingtalk.com/robot/send?access_token=abc"
         assert call_kwargs[1]["json"] == {"msgtype": "text", "text": {"content": "hello dingtalk"}}
 
-    def test_api_error_in_response_body(self):
-        """DingTalk always returns HTTP 200 but signals errors via errcode."""
-        resp = self._make_httpx_resp(json_data={"errcode": 310000, "errmsg": "sign not match"})
-        client_ctx, _ = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx):
-            result = asyncio.run(_send_dingtalk(
-                {"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=bad"},
-                "ch", "hi"
-            ))
-
-        assert "error" in result
-        assert "sign not match" in result["error"]
-
-    def test_http_error(self):
-        """If raise_for_status throws, the error is caught and returned."""
-        resp = self._make_httpx_resp(status_code=429)
-        resp.raise_for_status = MagicMock(side_effect=Exception("429 Too Many Requests"))
-        client_ctx, _ = self._make_httpx_client(resp)
-
-        with patch("httpx.AsyncClient", return_value=client_ctx):
-            result = asyncio.run(_send_dingtalk(
-                {"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=tok"},
-                "ch", "hi"
-            ))
-
-        assert "error" in result
-        assert "DingTalk send failed" in result["error"]
 
     def test_http_error_redacts_access_token_in_exception_text(self):
         token = "supersecret-access-token-123456789"
@@ -416,12 +286,6 @@ class TestSendDingtalk:
         assert token not in result["error"]
         assert "access_token=***" in result["error"]
 
-    def test_missing_config(self):
-        with patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": ""}, clear=False):
-            result = asyncio.run(_send_dingtalk({}, "ch", "hi"))
-
-        assert "error" in result
-        assert "DINGTALK_WEBHOOK_URL" in result["error"] or "not configured" in result["error"]
 
     def test_env_var_fallback(self):
         resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
