@@ -7,8 +7,8 @@ export function resolvePickerStartPath(
   options: PickerStartPathOptions,
   downloadsPath: () => string
 ): string | undefined {
-  if (options.defaultPath) {
-    return String(options.defaultPath)
+  if (typeof options.defaultPath === 'string' && options.defaultPath.length > 0) {
+    return options.defaultPath
   }
 
   if (options.fallbackToDownloads !== true) {
