@@ -23,11 +23,10 @@ import { bundledLanguages, getSingletonHighlighter } from 'shiki'
 import type { BundledLanguage, BundledTheme, Highlighter } from 'shiki'
 import { createOnigurumaEngine } from 'shiki/engine/oniguruma'
 
-import {
-  SHIKI_HIGHLIGHT_SCOPE,
-  SHIKI_THEME
-} from '@/components/chat/shiki-config'
+import { SHIKI_HIGHLIGHT_SCOPE, SHIKI_THEME } from '@/components/chat/shiki-config'
 import { highlightCache, highlightCacheKey } from '@/components/chat/shiki-highlight-cache'
+
+import { PlainShiki } from './shiki-plain'
 
 /** Same debounce react-shiki's `delay` used to throttle highlight work with. */
 const HIGHLIGHT_DELAY_MS = 120
@@ -108,11 +107,7 @@ async function highlightToHtml(
 }
 
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
 /** Never let a highlight failure blank a block — degrade to escaped plain text. */
@@ -120,12 +115,7 @@ function plainTextHtml(code: string): string {
   return `<pre class="shiki" style="background-color:transparent;margin:0"><code>${escapeHtml(code)}</code></pre>`
 }
 
-export default function CachedShikiBlock({
-  language,
-  code,
-  theme,
-  colorReplacements
-}: CachedShikiBlockProps) {
+export default function CachedShikiBlock({ language, code, theme, colorReplacements }: CachedShikiBlockProps) {
   const themeConfig = theme ?? SHIKI_THEME
   const replacements = colorReplacements ?? NO_COLOR_REPLACEMENTS
 
@@ -176,9 +166,10 @@ export default function CachedShikiBlock({
   }, [cacheKey, code, language, replacements, themeConfig])
 
   if (html === null) {
-    // Nothing to paint yet (miss, debounce pending). Matches react-shiki's
-    // own empty render while the highlight is in flight.
-    return null
+    // Keep the same pre/code geometry during the debounce. An empty render
+    // collapses every cold code card, then shifts the transcript when color
+    // arrives. React escapes the payload; only highlighting uses cached HTML.
+    return <PlainShiki code={code} />
   }
 
   return <div className="rs-root not-prose" dangerouslySetInnerHTML={{ __html: html }} data-testid="shiki-container" />
