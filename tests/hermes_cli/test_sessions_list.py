@@ -39,7 +39,7 @@ def test_sessions_list_titled_layout_shows_source(
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda **_kwargs: FakeDB())
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list", *argv_tail])
 
     main_mod.main()
@@ -71,7 +71,7 @@ def test_sessions_list_empty_result_closes_db(monkeypatch, capsys):
         def close(self):
             closed["value"] = True
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda **_kwargs: FakeDB())
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list"])
 
     main_mod.main()
