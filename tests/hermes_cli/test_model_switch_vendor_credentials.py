@@ -48,8 +48,9 @@ def _run_switch(
     catalog: list[str] | None = None,
 ):
     with patch("hermes_cli.model_switch.list_provider_models", return_value=catalog or []), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=("xiaomi", raw_input)), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=runtime_resolver), \
-         patch("hermes_cli.models.validate_requested_model", return_value=_ACCEPTED), \
+         patch("hermes_cli.models_validate.validate_requested_model", return_value=_ACCEPTED), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None):
         return switch_model(
@@ -88,7 +89,7 @@ def test_explicit_xiaomi_still_reports_missing_credentials():
 
     assert result.success is False
     assert result.target_provider == "xiaomi"
-    assert "Could not resolve credentials for provider 'Xiaomi MiMo'" in result.error_message
+    assert "hermes auth add xiaomi" in result.error_message
     assert "XIAOMI_API_KEY is not configured" in result.error_message
 
 
