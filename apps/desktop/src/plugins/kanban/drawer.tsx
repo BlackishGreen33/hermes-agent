@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
   ErrorState,
   host,
+  isSubmitEnter,
   Loader,
   LogView,
   Textarea,
@@ -45,6 +46,7 @@ import {
   taskKey,
   uploadAttachment
 } from './api'
+import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
   type DiagnosticAction,
@@ -321,7 +323,7 @@ function CommentComposer({
           className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pr-[3.5rem]' : 'pr-[5rem]')}
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (isSubmitEnter(event) && !event.shiftKey) {
               event.preventDefault()
               submit()
             }
@@ -720,11 +722,11 @@ export function TaskDrawer({
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={mutate(() => patchTask(task.id, { status: 'archived' }), onClose)}>
                     <Codicon name="archive" size="0.85rem" />
-                    {k.archiveTask}
+                    {k.archive}
                   </DropdownMenuItem>
                   <DropdownMenuItem className="text-destructive" onSelect={mutate(() => deleteTask(task.id), onClose)}>
                     <Codicon name="trash" size="0.85rem" />
-                    {k.deleteTask}
+                    {k.delete}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -770,6 +772,16 @@ export function TaskDrawer({
                   {task.workspace_path}
                 </MetaRow>
               )}
+              <MetaRow label={k.model}>
+                <ModelOverrideField
+                  onChange={next => void mutate(() => patchTask(task.id, overridePatch(next)))()}
+                  value={{
+                    effort: task.reasoning_effort ?? '',
+                    model: task.model_override ?? '',
+                    provider: task.provider_override ?? ''
+                  }}
+                />
+              </MetaRow>
               {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
               {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
               {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
@@ -934,11 +946,13 @@ export function TaskDrawer({
               </Section>
             )}
 
-            <AttachmentsSection
-              attachments={detail.attachments}
-              onUpload={file => uploadMut.mutate(file)}
-              pending={uploadMut.isPending}
-            />
+            {Array.isArray(detail.attachments) && (
+              <AttachmentsSection
+                attachments={detail.attachments}
+                onUpload={file => uploadMut.mutate(file)}
+                pending={uploadMut.isPending}
+              />
+            )}
           </div>
         )}
       </div>
