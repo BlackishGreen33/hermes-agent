@@ -79,6 +79,7 @@ describe('sessionFromSearchResult', () => {
       model: 'claude',
       role: 'user',
       session_id: 'tip-session',
+      last_active: 5_678,
       session_started: 1_234,
       snippet: 'matching history',
       source: 'cli'
@@ -87,5 +88,17 @@ describe('sessionFromSearchResult', () => {
     expect(session.cwd).toBe('/home/user/projects/vox-type')
     expect(session.id).toBe('tip-session')
     expect(session._lineage_root_id).toBe('root-session')
+    expect(session.started_at).toBe(1_234)
+    expect(session.last_active).toBe(5_678)
+  })
+
+  it('falls back to the start time when the result has no last_active', () => {
+    const session = sessionFromSearchResult({
+      session_id: 'start-only',
+      session_started: 1_234,
+      snippet: 'matching history'
+    })
+
+    expect(session.last_active).toBe(1_234)
   })
 })

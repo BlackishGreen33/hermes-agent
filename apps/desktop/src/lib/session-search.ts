@@ -33,7 +33,7 @@ export function sessionFromSearchResult(result: SessionSearchResult): SessionInf
     _lineage_root_id: result.lineage_root ?? null,
     input_tokens: 0,
     is_active: false,
-    last_active: ts,
+    last_active: result.last_active ?? ts,
     message_count: 0,
     model: result.model ?? null,
     output_tokens: 0,
