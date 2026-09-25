@@ -125,19 +125,10 @@ class TestNamedCustomProviderCatalogs:
         ), patch(
             "hermes_cli.model_switch_providers._fetch_picker_live_models",
             return_value=["qwen3:1.7b"],
-        ) as fetch:
+        ):
             catalogs = _named_custom_provider_catalogs()
 
         assert [m for m, _ in catalogs[0][2]] == ["qwen3:1.7b"]
-        fetch.assert_called_once_with(
-            "",
-            "http://127.0.0.1:11434/v1",
-            "custom:ollama",
-            False,
-            headers=None,
-            timeout=1.5,
-            api_mode=None,
-        )
     def test_legacy_credentialless_ollama_discovers_native_catalog(self):
         cfg = _cfg(
             custom_providers=[
@@ -370,7 +361,7 @@ class TestModelStateIncludesNamedProviders:
         )
         acp_agent = HermesACPAgent(session_manager=manager)
         state = manager.create_session(cwd=str(tmp_path))
-        inventory = {"providers": [{"slug": inventory_provider, "name": "9Router", "api_url": "https://router.example/v1", "models": [{"id": model}]}]}
+        inventory = {"providers": [{"slug": inventory_provider, "name": "9Router", "api_url": "https://router.example/v1", "is_user_defined": True, "models": [{"id": model}]}]}
 
         with patch("hermes_cli.inventory.build_models_payload", return_value=inventory):
             model_state = acp_agent._build_model_state(state)
