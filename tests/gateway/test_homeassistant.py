@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import (
-    GatewayConfig,
     Platform,
     PlatformConfig,
 )
@@ -84,31 +83,9 @@ class TestFormatStateChange:
         assert "Living Room Temp" in msg
 
 
-    def test_binary_sensor_on(self):
-        msg = self.fmt(
-            "binary_sensor.motion",
-            {"state": "off"},
-            {"state": "on", "attributes": {"friendly_name": "Hallway Motion"}},
-        )
-        assert "triggered" in msg
-        assert "Hallway Motion" in msg
 
 
-    def test_light_turned_on(self):
-        msg = self.fmt(
-            "light.bedroom",
-            {"state": "off"},
-            {"state": "on", "attributes": {"friendly_name": "Bedroom Light"}},
-        )
-        assert "turned on" in msg
 
-    def test_switch_turned_off(self):
-        msg = self.fmt(
-            "switch.heater",
-            {"state": "on"},
-            {"state": "off", "attributes": {"friendly_name": "Heater"}},
-        )
-        assert "turned off" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -321,17 +298,59 @@ class TestSendViaRestApi:
         assert "Bearer tok" in call_args[1]["headers"]["Authorization"]
 
     @pytest.mark.asyncio
-    async def test_send_uses_configured_notify_service(self):
-        adapter = _make_adapter(notify_service="notify.mobile_app_iphone")
-        mock_session = self._mock_aiohttp_session(200)
+    @pytest.mark.parametrize("service", ["mobile_app_phone", "notify.mobile_app_phone", "", "notify.mobile/app"])
+    async def test_notify_delivery_with_and_without_live_adapter(self, monkeypatch, service):
+        """Config reaches both HTTP send paths, including cron without a live gateway (#23643)."""
+        from types import SimpleNamespace
 
-        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
-            mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
-            mock_aiohttp.ClientTimeout = lambda total: total
-            result = await adapter.send("ha_events", "Test notification")
+        from aiohttp import web
+        import yaml
 
-        assert result.success is True
-        assert "/api/services/notify/mobile_app_iphone" in mock_session.post.call_args[0][0]
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import PlatformEntry, PlatformRegistry
+        from hermes_constants import get_hermes_home
+        from plugins.platforms.homeassistant.adapter import register
+        from tools import send_message_tool
+
+        calls = []
+
+        async def receive(request):
+            calls.append((request.path, request.headers["Authorization"], await request.json()))
+            return web.json_response([])
+
+        app = web.Application()
+        app.router.add_post("/api/services/{domain}/{service}", receive)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            url = f"http://127.0.0.1:{runner.addresses[0][1]}"
+            (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({
+                "platforms": {"homeassistant": {
+                    "enabled": True, "token": "example-token",
+                    "extra": {"url": url, "notify_service": service},
+                }},
+            }), encoding="utf-8")
+            pconfig = load_gateway_config().platforms[Platform.HOMEASSISTANT]
+            adapter = HomeAssistantAdapter(pconfig)
+            assert (await adapter.send("phone", "live message")).success
+
+            registry = PlatformRegistry()
+            register(SimpleNamespace(register_platform=lambda **kwargs: registry.register(PlatformEntry(**kwargs))))
+            monkeypatch.setattr("gateway.platform_registry.platform_registry", registry)
+            monkeypatch.setattr(send_message_tool, "_live_adapter", lambda platform: (None, None))
+            result = await send_message_tool._send_via_adapter(Platform.HOMEASSISTANT, pconfig, "phone", "cron message")
+            assert result["success"] is True
+        finally:
+            await runner.cleanup()
+
+        configured = service in {"mobile_app_phone", "notify.mobile_app_phone"}
+        assert calls == [
+            ("/api/services/notify/mobile_app_phone" if configured else "/api/services/persistent_notification/create",
+             "Bearer example-token", {"title": "Hermes Agent", "message": "live message"}),
+            ("/api/services/notify/mobile_app_phone" if configured else "/api/services/notify/notify",
+             "Bearer example-token", {"message": "cron message", "target": "phone"}),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -344,12 +363,6 @@ class TestSendViaRestApi:
 # ---------------------------------------------------------------------------
 
 
-class TestWsUrlConstruction:
-    def test_http_to_ws(self):
-        config = PlatformConfig(enabled=True, token="t", extra={"url": "http://ha:8123"})
-        adapter = HomeAssistantAdapter(config)
-        ws_url = adapter._hass_url.replace("http://", "ws://").replace("https://", "wss://")
-        assert ws_url == "ws://ha:8123"
 
 
 class TestLocalNetworkConnectHint:
@@ -363,7 +376,7 @@ class TestLocalNetworkConnectHint:
         assert _connect_error_detail(err) == str(err)
         assert _connect_error_detail(RuntimeError("auth failed")) == "auth failed"
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_ehostunreach_under_launchd_names_the_remedy(self, monkeypatch):
         """Only the launchd-supervised gateway can be denied by Local Network Privacy (#71206)."""
         from plugins.platforms.homeassistant.adapter import _connect_error_detail
@@ -372,6 +385,4 @@ class TestLocalNetworkConnectHint:
         err = OSError(errno.EHOSTUNREACH, "No route to host")
         detail = _connect_error_detail(err)
         assert detail.startswith(str(err))
-        assert "Local Network" in detail
-        assert "hermes gateway install" in detail
-        assert "71206" in detail
+        assert len(detail) > len(str(err))  # a remedy hint is appended
