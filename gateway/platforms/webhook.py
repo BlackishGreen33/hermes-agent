@@ -3,7 +3,9 @@ Svix, Linear, generic), renders payloads into agent prompts, and routes response
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (fire an existing cron
-job per event; the rendered prompt is transient per-run context; exclusive with deliver_only). Per-route rate limiting,
+job per event; the rendered prompt is transient per-run context; exclusive with deliver_only), mirror_to_session
+(opt-in: a delivered response is also written into the target chat's transcript so follow-ups there have
+context). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
 replay protection; body-only V1 is deprecated but accepted with a warning."""
 
@@ -109,6 +111,19 @@ def _json_error(message: str, status: int) -> "web.Response":
     return web.json_response({"error": message}, status=status)
 
 
+def _route_enabled(route: dict, *, name: str, source: str) -> bool:
+    """Accept the default or a real boolean; reject truthy non-booleans."""
+    enabled = route.get("enabled", True)
+    if isinstance(enabled, bool):
+        return enabled
+    logger.warning(
+        "[webhook] %s route '%s' skipped: 'enabled' must be a boolean when set.",
+        source,
+        name,
+    )
+    return False
+
+
 def _peek_session_id(store, session_key: str):
     """Prefer the store's lock-held accessor; the private-path fallback is for older stores / test doubles."""
     if callable(peek := getattr(store, "peek_session_id", None)):
@@ -168,7 +183,14 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: Optional[str] = extra.get("host", DEFAULT_HOST) or None
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._global_secret: str = extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = extra.get("routes", {})
+        raw_static_routes: Dict[str, dict] = extra.get("routes", {})
+        # A disabled config route still reserves its URL name until removed from config.yaml.
+        self._reserved_static_route_names = set(raw_static_routes)
+        self._static_routes: Dict[str, dict] = {
+            name: route
+            for name, route in raw_static_routes.items()
+            if isinstance(route, dict) and _route_enabled(route, name=name, source="Static")
+        }
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
@@ -379,11 +401,21 @@ class WebhookAdapter(BasePlatformAdapter):
             mtime = subs_path.stat().st_mtime
             if mtime <= self._dynamic_routes_mtime:
                 return  # No change
-            data = json.loads(subs_path.read_text(encoding="utf-8"))
+            data = json.loads(subs_path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 return
-            self._dynamic_routes = {  # static routes take precedence
-                k: v for k, v in data.items() if k not in self._static_routes and self._dynamic_route_allowed(k, v)}
+            dynamic_routes: Dict[str, dict] = {}
+            for name, route in data.items():
+                if name in self._reserved_static_route_names:
+                    continue
+                if not isinstance(route, dict):
+                    logger.warning("[webhook] Dynamic route '%s' skipped: route config must be an object.", name)
+                    continue
+                if not _route_enabled(route, name=name, source="Dynamic"):
+                    continue
+                if self._dynamic_route_allowed(name, route):
+                    dynamic_routes[name] = route
+            self._dynamic_routes = dynamic_routes
             self._routes = {**self._dynamic_routes, **self._static_routes}
             self._dynamic_routes_mtime = mtime
             logger.info("[webhook] Reloaded %d dynamic route(s): %s", len(self._dynamic_routes),
@@ -481,7 +513,9 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
-                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+                    "route": route_name,
+                    "mirror": route_config.get("mirror_to_session") is True}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
@@ -544,10 +578,9 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning("[webhook] Route %s is not authorized for profile %r", route_name, profile or "default")
             # Same as unknown-route so profile mismatches can't enumerate route bindings.
             return route_name, None, profile, _json_error(f"Unknown route: {route_name}", 404)
-        # Disabled routes stay in the subscriptions file (dashboard can re-enable) but reject events.
-        # Only an explicit ``enabled: false`` turns a route off.
-        if route_config.get("enabled", True) is False:
-            return route_name, None, profile, _json_error(f"Route disabled: {route_name}", 403)
+        # Disabled routes stay in the subscriptions file (dashboard can re-enable) but never enter dispatch.
+        if not _route_enabled(route_config, name=route_name, source="Runtime"):
+            return route_name, None, profile, _json_error(f"Unknown route: {route_name}", 404)
         return route_name, route_config, profile, None
 
     @staticmethod
@@ -650,7 +683,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            "route": route_name,
+            "mirror": route_config.get("mirror_to_session") is True}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -873,7 +908,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-            return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            if result.success:
+                self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
+            return result
 
     def _delivery_config(self, profile: Optional[str]):
         """Gateway config of the profile a delivery is bound to (call inside ``_profile_scope``)."""
@@ -881,3 +919,30 @@ class WebhookAdapter(BasePlatformAdapter):
             return self.gateway_runner.config
         from gateway.config import load_gateway_config
         return load_gateway_config()
+
+    def _mirror_delivery(self, platform_name: str, chat_id: str, content: str, delivery: dict,
+                         thread_id: Optional[str]) -> None:
+        """Best-effort mirror of a delivered response into the TARGET chat's session transcript, so a
+        follow-up there ("so he's out?") sees what the webhook run just told the user. Without this the
+        text only lives in the ephemeral ``webhook:<route>:<delivery_id>`` session and the target chat's
+        agent has no idea it sent anything. Same path and USER-role convention as cron briefs
+        (``cron.scheduler_delivery._maybe_mirror_cron_delivery``, #2221): the text is not the target
+        session's agent speaking, and a labelled user turn merges safely on strict-alternation providers.
+        Opt-in per route (``mirror_to_session: true``), default off like cron's ``mirror_delivery``: the text
+        lands with user authority in a chat the route author may not own, and on ``deliver_only`` routes it is
+        the raw rendered payload. Called inside the routed profile's scope so the lookup hits THAT profile's
+        state.db — a DM chat_id is the user's id on every bot, so an unscoped mirror lands in another
+        profile's DM with the same person. Never raises — a delivered message must not be reported failed
+        because the mirror broke."""
+        if delivery.get("mirror") is not True:
+            return
+        route = delivery.get("route") or "webhook"
+        try:
+            from gateway.mirror import mirror_to_session
+            ok = mirror_to_session(platform_name, chat_id, f"[Webhook delivery: {route}]\n{content}",
+                                   source_label="webhook", thread_id=thread_id, role="user")
+            logger.log(logging.INFO if ok else logging.DEBUG,
+                       "[webhook] Route '%s' delivery %smirrored into %s:%s session", route, "" if ok else "not ",
+                       platform_name, chat_id)
+        except Exception as e:
+            logger.debug("[webhook] Route '%s' delivery mirror into %s:%s failed: %s", route, platform_name, chat_id, e)
