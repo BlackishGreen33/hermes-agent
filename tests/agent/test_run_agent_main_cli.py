@@ -1,7 +1,5 @@
-import sys
-
-import fire
 import run_agent
+from agent.legacy_cli import main as legacy_main
 
 
 class _RecordingAgent:
@@ -28,11 +26,10 @@ def _patch_agent(monkeypatch):
     return _RecordingAgent.instances
 
 
-def test_fire_accepts_dashed_browser_test_flag(monkeypatch):
+def test_cli_accepts_dashed_browser_test_flag(monkeypatch):
     agents = _patch_agent(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["run_agent.py", "--browser-test"])
 
-    fire.Fire(run_agent.main)
+    assert legacy_main(["--browser-test"], run=run_agent.main) == 0
 
     agent = agents[0]
     assert agent.kwargs["enabled_toolsets"] == ["browser"]
