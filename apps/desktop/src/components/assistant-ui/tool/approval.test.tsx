@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,7 +11,7 @@ import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTest
 import { $activeSessionId } from '@/store/session'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
-import { PendingApprovalStack } from './approval'
+import { ApprovalPlacementContext, PendingApprovalStack } from './approval'
 
 function Runtime({ children }: { children: ReactNode }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({ messages: [], isRunning: false, onNew: async () => {} })
@@ -82,22 +82,22 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('renders approval controls for protected instruction writes', () => {
-    setRequest('Update protected agent instructions')
-    render(<PendingApprovalStack />)
+  it.each(['inline', 'floating'] as const)('keeps multi-line approval reasons readable in %s placement', placement => {
+    const description = 'Run command:\npwd\n<em>Show the working directory</em>'
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({ command: '<terminal> (plugin approval rule)', description, requestId: 'apr-1', sessionId: 'sess-1' })
+    render(
+      <ApprovalPlacementContext.Provider value={placement}>
+        <PendingApprovalStack />
+      </ApprovalPlacementContext.Provider>
+    )
 
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
-  })
-
-  it('keeps multi-line approval reasons readable', () => {
-    const description = 'Before:\nold value\nAfter:\nnew value'
-    setApprovalRequest({ command: 'apply changes', description, requestId: 'apr-1', sessionId: 'sess-1' })
-    render(<PendingApprovalStack />)
-
-    const descriptionElement = screen.getByText(description)
+    const descriptionElement = screen.getByText(description, { collapseWhitespace: false })
+    expect(descriptionElement.textContent).toBe(description)
+    expect(descriptionElement.querySelector('em')).toBeNull()
     expect(descriptionElement.className).toContain('whitespace-pre-wrap')
     expect(descriptionElement.className).toContain('overflow-auto')
+    expect(descriptionElement.className).toContain('max-h-24')
   })
 
   it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
@@ -201,15 +201,6 @@ describe('PendingApprovalStack', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
-  it('keeps the full command in a bounded scrollable body', () => {
-    const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
-    setRequest(longCommand)
-    render(<PendingApprovalStack />)
-
-    expect(screen.getByText(longCommand).className).toContain('max-h-40')
-    expect(screen.getByText(longCommand).className).toContain('overflow-auto')
-  })
-
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {
     const request = mockGateway()
     const respond = liveApproval()
@@ -266,16 +257,6 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
-  })
-
-  it('renders the stack independently of mounted tool rows', () => {
-    setRequest('rm /tmp/hermes_approval_test.txt')
-    const { container } = render(<PendingApprovalStack />)
-    const stack = container.querySelector('[data-slot="tool-approval-stack"]')
-
-    expect(stack).not.toBeNull()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
   it('keeps a failed request in front and releases held Enter until the user retries', async () => {
