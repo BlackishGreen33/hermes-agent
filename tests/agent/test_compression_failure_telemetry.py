@@ -58,7 +58,7 @@ def test_successful_attempt_records_result_estimate(caplog):
 def test_failed_attempt_records_redacted_auxiliary_diagnostics(caplog):
     compressor = _compressor()
     compressor._begin_compression_telemetry(current_tokens=231_200, session_id="session-failure")
-    compressor._last_aux_resolved_model = "broken-aux-model"
+    compressor._active_compression_telemetry["aux_model"] = "broken-aux-model"
     compressor._active_compression_telemetry["aux_provider"] = "openai-codex"
     error = Exception(
         "HTTP 504 provider rejected OPENAI_API_KEY=sk-proj-" + "X" * 40
@@ -85,8 +85,20 @@ def test_failed_attempt_records_redacted_auxiliary_diagnostics(caplog):
     assert payload["failed_aux_model"] == "broken-aux-model"
     assert payload["failure_error_type"] == "Exception"
     assert payload["failure_status_code"] == 504
-    assert "HTTP 504" in payload["failure_reason"]
+    assert payload["failure_reason"] == "timed out"
     assert "sk-proj-" not in payload["failure_reason"]
     assert "access_token=opaque-token" not in payload["failure_reason"]
     assert "session-failure" in json.dumps(payload)
     assert "opaque-token" not in json.dumps(payload)
+
+
+def test_main_route_does_not_masquerade_as_auxiliary_failure():
+    compressor = _compressor()
+    compressor._begin_compression_telemetry(current_tokens=231_200, session_id="session-main-failure")
+    compressor._active_compression_telemetry["aux_model"] = compressor.model
+    compressor._active_compression_telemetry["aux_provider"] = compressor.provider
+    compressor._record_summary_failure_telemetry(Exception("provider failed"))
+
+    assert compressor._active_compression_telemetry["failed_aux_provider"] is None
+    assert compressor._active_compression_telemetry["failed_aux_model"] is None
+    assert compressor._active_compression_telemetry["failure_reason"] == "failed"

@@ -2149,14 +2149,22 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if not isinstance(telemetry, dict):
             return
-        failed_model = str(
-            getattr(self, "_last_aux_resolved_model", None) or self.summary_model or self.model or ""
-        ).strip() or None
-        failed_provider = str(telemetry.get("aux_provider") or self.provider or "").strip() or None
+        failed_model = str(telemetry.get("aux_model") or "").strip() or None
+        failed_provider = str(telemetry.get("aux_provider") or "").strip() or None
+        main_model = str(telemetry.get("main_model") or "").strip()
+        main_provider = str(telemetry.get("main_provider") or "").strip()
+        if (
+            failed_model is None
+            and failed_provider is None
+        ) or (
+            failed_model in {None, main_model}
+            and failed_provider in {None, main_provider}
+        ):
+            failed_model = failed_provider = None
         for key, value in (
             ("failed_aux_provider", failed_provider),
             ("failed_aux_model", failed_model),
-            ("failure_reason", _redact_compaction_text(_short_error_text(error))),
+            ("failure_reason", _classify_summary_failure(error).fallback_reason()),
             ("failure_error_type", type(error).__name__),
             ("failure_status_code", _safe_int(_exc_status_code(error))),
         ):
