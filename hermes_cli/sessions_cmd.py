@@ -308,7 +308,7 @@ def _cmd_list(db, args):
         (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<16} {'ID'}", 105,
                          lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {_src(s):<16} {s['id']}"),
     }
-    header, fmt = layouts[(has_ws, has_titles)]
+    header, rule, fmt = layouts[(has_ws, has_titles)]
     print(header + "\n" + "─" * len(header))
     for s in sessions:
         print(fmt(s))
