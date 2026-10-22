@@ -22,6 +22,19 @@ test('resolvePickerStartPath keeps an explicit default path ahead of Downloads',
   assert.equal(downloadsPath.mock.calls.length, 0)
 })
 
+test('resolvePickerStartPath rejects non-string and blank defaults before choosing a fallback', () => {
+  for (const defaultPath of [{ invalid: true }, 42, '', '   ']) {
+    assert.equal(
+      resolvePickerStartPath({ defaultPath, fallbackToDownloads: true }, () => '/Users/test/Downloads'),
+      '/Users/test/Downloads'
+    )
+    assert.equal(
+      resolvePickerStartPath({ defaultPath }, () => '/Users/test/Downloads'),
+      undefined
+    )
+  }
+})
+
 test('resolvePickerStartPath leaves native dialog behavior intact when Downloads cannot be resolved', () => {
   assert.equal(
     resolvePickerStartPath({ fallbackToDownloads: true }, () => ''),
