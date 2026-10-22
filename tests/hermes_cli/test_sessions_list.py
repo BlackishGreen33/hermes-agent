@@ -1,5 +1,4 @@
 import sys
-import time
 
 import pytest
 
@@ -15,31 +14,21 @@ import pytest
         ),
     ],
 )
-def test_sessions_list_titled_layout_shows_source(
-    monkeypatch, capsys, argv_tail, session_fields, workspace_label
+@pytest.mark.parametrize("has_title", [True, False])
+def test_sessions_list_layout_keeps_source(
+    monkeypatch, capsys, tmp_path, argv_tail, session_fields, workspace_label, has_title
 ):
     import hermes_cli.main as main_mod
     import hermes_state
 
-    class FakeDB:
-        def list_sessions_rich(self, **kwargs):
-            assert kwargs["source"] is None
-            assert kwargs["exclude_sources"] == ["tool"]
-            return [
-                {
-                    "id": "20260401_201329_d85961",
-                    "source": "telegram",
-                    "title": "Named chat",
-                    "preview": "hello from telegram",
-                    "last_active": time.time(),
-                    **session_fields,
-                }
-            ]
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda **_kwargs: FakeDB())
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with hermes_state.SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("listed-session", source="telegram", **session_fields)
+        db.append_message("listed-session", role="user", content="hello from telegram")
+        if has_title:
+            db.set_session_title("listed-session", "Named chat")
+        db.create_session("hidden-tool-session", source="tool", **session_fields)
+        db.append_message("hidden-tool-session", role="user", content="hidden tool preview")
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "list", *argv_tail])
 
     main_mod.main()
@@ -48,11 +37,16 @@ def test_sessions_list_titled_layout_shows_source(
     lines = output.splitlines()
     assert lines, "expected sessions list output"
     header = lines[0]
-    assert "Title" in header
+    assert ("Title" in header) is has_title
     assert "Src" in header
-    assert "Named chat" in output
+    assert ("Named chat" in output) is has_title
     assert "telegram" in output
-    assert "20260401_201329_d85961" in output
+    assert "listed-session" in output
+    assert "hidden-tool-session" not in output
+    if not workspace_label or not has_title:
+        assert "hello from telegram" in output
+    if has_title:
+        assert len(lines[1]) == len(header)
     if workspace_label:
         assert "Workspace" in header
         assert workspace_label in output
