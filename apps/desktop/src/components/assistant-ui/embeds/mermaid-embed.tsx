@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Zoomable } from '@/components/ui/zoomable'
 import { useI18n } from '@/i18n'
-import { copySvgAsPng, normalizeSvgSize } from '@/lib/svg-image'
+import { copySvgAsPng, normalizeSvgSize, xmlWellFormedSvg } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
 
 import { createMermaidRenderCache, createRetryableLoader, nextPaint } from './mermaid-render-cache'
@@ -38,7 +38,11 @@ const renderCache = createMermaidRenderCache({
     const id = `mmd-${Math.random().toString(36).slice(2)}`
     const result = await mermaid.render(id, code)
 
-    return normalizeSvgSize(result.svg)
+    // Mermaid's markup targets inline HTML, so a label's `<br/>` reaches us as
+    // an open `<br>` and a non-breaking space as `&nbsp;`; make it XML before
+    // the size pass and the data: URI below, or the diagram decodes to a
+    // broken image (#133089).
+    return normalizeSvgSize(xmlWellFormedSvg(result.svg))
   },
   // Defer until the source fallback has had a frame to paint, so the mermaid
   // runtime import and parse/layout cannot contend with first paint of the
