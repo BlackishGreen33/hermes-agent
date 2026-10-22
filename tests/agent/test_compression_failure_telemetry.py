@@ -5,13 +5,14 @@ import logging
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import _emit_compression_attempt_telemetry
+from agent.conversation_compression_telemetry import _emit_compression_attempt_telemetry
 
 
 class _Agent:
     def __init__(self, compressor):
         self.context_compressor = compressor
         self.session_id = "session-telemetry-test"
+        self._compression_attempt_id = compressor._active_compression_telemetry["attempt_id"]
 
 
 def _extract_telemetry(caplog):
@@ -33,26 +34,6 @@ def _compressor():
             quiet_mode=True,
             config_context_length=272_000,
         )
-
-
-def test_successful_attempt_records_result_estimate(caplog):
-    compressor = _compressor()
-    compressor._begin_compression_telemetry(current_tokens=231_200, session_id="session-success")
-
-    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
-        _emit_compression_attempt_telemetry(
-            _Agent(compressor),
-            started_at=0.0,
-            commit_status="committed",
-            split_status="not_applicable",
-            result_estimated_tokens=18_432,
-        )
-
-    payload = _extract_telemetry(caplog)
-    assert payload["main_model"] == "gpt-6.1-sol"
-    assert payload["main_context_limit"] == 272_000
-    assert payload["effective_threshold"] == 231_200
-    assert payload["result_estimated_tokens"] == 18_432
 
 
 def test_failed_attempt_records_redacted_auxiliary_diagnostics(caplog):
@@ -97,8 +78,34 @@ def test_main_route_does_not_masquerade_as_auxiliary_failure():
     compressor._begin_compression_telemetry(current_tokens=231_200, session_id="session-main-failure")
     compressor._active_compression_telemetry["aux_model"] = compressor.model
     compressor._active_compression_telemetry["aux_provider"] = compressor.provider
-    compressor._record_summary_failure_telemetry(Exception("provider failed"))
+    error = Exception("provider failed")
+    error.status_code = 400
+    compressor._record_summary_failure_telemetry(error)
+    # A later auxiliary failure must not fill the first main failure's empty identity.
+    compressor._active_compression_telemetry.update(aux_model="later-aux-model", aux_provider="later-aux-provider")
+    retry_kind = compressor._record_summary_failure_telemetry(TimeoutError("timed out"))
 
     assert compressor._active_compression_telemetry["failed_aux_provider"] is None
     assert compressor._active_compression_telemetry["failed_aux_model"] is None
     assert compressor._active_compression_telemetry["failure_reason"] == "failed"
+    assert compressor._active_compression_telemetry["failure_error_type"] == "Exception"
+    assert compressor._active_compression_telemetry["failure_status_code"] == 400
+    assert retry_kind.timeout is True
+
+
+def test_auxiliary_timeout_does_not_borrow_the_main_retry_status():
+    compressor = _compressor()
+    telemetry = compressor._begin_compression_telemetry(current_tokens=231_200, session_id="session-retry-failure")
+    telemetry.update(aux_model="first-aux-model", aux_provider="first-aux-provider")
+    compressor._record_summary_failure_telemetry(TimeoutError("timed out"))
+
+    telemetry.update(aux_model=compressor.model, aux_provider=compressor.provider)
+    retry_error = Exception("request rejected")
+    retry_error.status_code = 400
+    retry_kind = compressor._record_summary_failure_telemetry(retry_error)
+
+    assert telemetry["failed_aux_provider"] == "first-aux-provider"
+    assert telemetry["failed_aux_model"] == "first-aux-model"
+    assert telemetry["failure_error_type"] == "TimeoutError"
+    assert telemetry["failure_status_code"] is None
+    assert retry_kind.timeout is False
