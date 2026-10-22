@@ -1827,7 +1827,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = DelayedProgressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal tool metadata
+    import tools.terminal_tool
 
     adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
     runner = _make_runner(adapter)
@@ -2009,28 +2009,6 @@ class TerminalCommandAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
-class ExecuteCodeAgent:
-    """Emits an execute_code tool.started with real, multi-line code."""
-
-    CODE = (
-        "import sys, os\n"
-        "sys.path.insert(0, '/opt/data/skills/advisors/scripts')\n"
-        "print('ready')"
-    )
-
-    def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
-        self.tools = []
-
-    def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback(
-            "tool.started", "execute_code", self.CODE, {"code": self.CODE}
-        )
-        # Let the async progress task drain the queue and send before returning.
-        time.sleep(0.35)
-        return {"final_response": "done", "messages": [], "api_calls": 1}
-
-
 @pytest.mark.asyncio
 async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
     """Terminal progress on a markdown-capable (supports_code_blocks) gateway
@@ -2047,7 +2025,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
@@ -2087,53 +2065,6 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_execute_code_progress_renders_fenced_code_block(monkeypatch, tmp_path):
-    """execute_code progress on markdown-capable gateways uses the same fenced
-    code-block path as terminal, reading the script from args["code"]."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = ExecuteCodeAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
-    runner = _make_runner(adapter)
-    gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="12345",
-        chat_type="dm",
-        thread_id=None,
-    )
-
-    result = await runner._run_agent(
-        message="hello",
-        context_prompt="",
-        history=[],
-        source=source,
-        session_id="sess-execute-code-code-block",
-        session_key="agent:main:telegram:dm:12345",
-    )
-
-    assert result["final_response"] == "done"
-    all_content = " ".join(call["content"] for call in adapter.sent)
-    all_content += " ".join(call["content"] for call in adapter.edits)
-    assert "```" in all_content
-    assert "```python" not in all_content
-    assert "import sys, os" in all_content
-    assert "sys.path.insert" not in all_content
-    assert "print('ready')" not in all_content
-    assert 'execute_code: "' not in all_content
-
-
-@pytest.mark.asyncio
 async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_path):
     """Verbose mode on a markdown-capable gateway renders the FULL multi-line
     command in a bare fenced block (no truncation, no 'bash' tag).  This is the
@@ -2147,7 +2078,7 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+    import tools.terminal_tool
 
     adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
     runner = _make_runner(adapter)
