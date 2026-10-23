@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
 
@@ -23,6 +23,42 @@ const views: SettingsView[] = [
 ]
 
 describe('settings subpage routing', () => {
+  beforeEach(() => {
+    vi.stubGlobal('hermesDesktop', { hudModifier: {}, screenshot: {} })
+  })
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it.each([
+    { bridge: undefined, expected: ['shortcuts'] },
+    { bridge: {}, expected: ['shortcuts'] },
+    { bridge: { screenshot: {} }, expected: ['shortcuts', 'screen-capture'] },
+    { bridge: { hudModifier: {} }, expected: ['shortcuts', 'hud-gesture'] },
+    { bridge: { hudModifier: {}, screenshot: {} }, expected: ['shortcuts', 'hud-gesture', 'screen-capture'] }
+  ])(
+    'only advertises available gesture pages and redirects unavailable saved targets ($expected)',
+    ({ bridge, expected }) => {
+      vi.stubGlobal('hermesDesktop', bridge)
+
+      expect(settingsSubpages('keybinds').map(page => page.id)).toEqual(expected)
+
+      const targets = settingSearchTargets(TRANSLATIONS.en).filter(target => target.view === 'keybinds')
+
+      for (const [page, setting] of [
+        ['hud-gesture', 'keybinds.hud-modifier'],
+        ['screen-capture', 'keybinds.screenshot']
+      ]) {
+        const available = expected.includes(page)
+
+        expect(targets.some(target => target.id === setting)).toBe(available)
+
+        for (const query of [`page=${page}`, `setting=${setting}`, `page=shortcuts&setting=${setting}`]) {
+          expect(resolveSettingsSubpage('keybinds', new URLSearchParams(query))).toBe(available ? page : 'shortcuts')
+        }
+      }
+    }
+  )
+
   it('opens the first ordered child for parents and keeps explicit child destinations', () => {
     for (const view of views) {
       const pages = settingsSubpages(view)

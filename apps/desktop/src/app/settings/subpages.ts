@@ -37,6 +37,7 @@ import { settingDefinition } from './settings-manifest'
 import type { SettingsView } from './types'
 
 export interface SettingsSubpage {
+  available?: () => boolean
   id: string
   labelKey: string
 }
@@ -102,7 +103,7 @@ export function settingsSubpages(view: SettingsView): readonly SettingsSubpage[]
     return CONFIG_SUBPAGES[view.slice('config:'.length)] ?? []
   }
 
-  return OTHER_SUBPAGES[view] ?? []
+  return (OTHER_SUBPAGES[view] ?? []).filter(page => !page.available || page.available())
 }
 
 /** Shared by search serialization and saved links that predate subpages. */

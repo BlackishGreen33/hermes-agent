@@ -1,7 +1,10 @@
+import { SETTINGS_MANIFEST } from './settings-manifest'
+import type { SettingsSubpage } from './subpages'
+
 // Pages with separate tasks expose content-only subpages. Billing keeps its
 // existing capability-gated bview=overview|plans flow rather than adding a
 // second route parameter that could disagree with a pending financial action.
-export const OTHER_SUBPAGES: Record<string, { id: string; labelKey: string }[]> = {
+export const OTHER_SUBPAGES: Record<string, SettingsSubpage[]> = {
   gateway: [
     { id: 'connection', labelKey: 'gatewayConnection' },
     { id: 'devices', labelKey: 'gatewayDevices' },
@@ -9,8 +12,8 @@ export const OTHER_SUBPAGES: Record<string, { id: string; labelKey: string }[]> 
   ],
   keybinds: [
     { id: 'shortcuts', labelKey: 'keyboardShortcuts' },
-    { id: 'hud-gesture', labelKey: 'hudGesture' },
-    { id: 'screen-capture', labelKey: 'screenCapture' }
+    { available: SETTINGS_MANIFEST.keybinds.hudModifier.available, id: 'hud-gesture', labelKey: 'hudGesture' },
+    { available: SETTINGS_MANIFEST.keybinds.screenshot.available, id: 'screen-capture', labelKey: 'screenCapture' }
   ],
   notifications: [
     { id: 'alerts', labelKey: 'notificationAlerts' },
