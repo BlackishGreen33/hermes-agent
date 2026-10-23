@@ -37,6 +37,12 @@ def _entry_status(entry: tuple, enabled: set, disabled: set, active: set) -> str
 _STATUS_MARKUP = {"disabled": "[red]disabled[/red]", "enabled": "[green]enabled[/green]"}
 
 
+def _discovered_location(source: str, dir_path: str | Path | None) -> str | None:
+    if not dir_path:
+        return None
+    return str(dir_path) if source == "entrypoint" else str(Path(dir_path).absolute())
+
+
 def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     console = _pc()._console()
@@ -61,27 +67,31 @@ def cmd_list(args: Any | None = None) -> None:
         (name, _pc()._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active),
          str(version), description,
          catalog.catalog_annotation(_dir) or _pc()._pin_annotation(name, pins) or source,
-         catalog.removed_annotation(name, _dir, removed_entries))
+         catalog.removed_annotation(name, _dir, removed_entries), _discovered_location(source, _dir))
         for name, version, description, source, _dir, key in entries
     ]
 
     if getattr(args, "json", False):
-        keys = ("name", "status", "version", "description", "source", "removed")
+        keys = ("name", "status", "version", "description", "source", "removed", "location")
         print(json.dumps([dict(zip(keys, row)) for row in rows], indent=2))
         return
 
     if getattr(args, "plain", False):
-        for name, status, version, _description, source, _removed in rows:
-            print(f"{status:12} {source:8} {version:8} {name}")
+        for name, status, version, _description, source, _removed, location in rows:
+            suffix = f" {location or 'unknown'}" if getattr(args, "paths", False) else ""
+            print(f"{status:12} {source:8} {version:8} {name}{suffix}")
         return
 
     if not entries:
         console.print("[dim]No plugins matched the selected filters.[/dim]")
         return
 
-    table = _pc()._table(
-        (("Name", "bold"), ("Status", None), ("Version", "dim"), ("Description", None), ("Source", "dim")),
-        title="Plugins", show_lines=False)
+    from rich.text import Text
+
+    columns = [("Name", "bold"), ("Status", None), ("Version", "dim"), ("Description", None), ("Source", "dim")]
+    if getattr(args, "paths", False):
+        columns.append(("Discovered location", "dim"))
+    table = _pc()._table(columns, title="Plugins", show_lines=False)
     # provenance class per user-installed dir (bundled entries show '-')
     from hermes_cli.plugins_provenance import plugins_provenance
 
@@ -90,13 +100,14 @@ def cmd_list(args: Any | None = None) -> None:
     }
 
     removed_lines = []
-    for name, status_name, version, description, source, removed in rows:
+    for name, status_name, version, description, source, removed, location in rows:
         klass = prov_classes.get(name)
         status = _STATUS_MARKUP.get(status_name, "[yellow]not enabled[/yellow]")
         if removed:
             name = f"[red]{name} ✗[/red]"
             removed_lines.append(f"[red]✗ {name}[/red] was removed from the plugin catalog: {removed}")
-        table.add_row(name, status, version, description, source)
+        location_cells = [Text(location or "unknown")] if getattr(args, "paths", False) else []
+        table.add_row(name, status, version, description, source, *location_cells)
         # class line rides the Source column for user plugins
         if source in {"user", "git"}:
             if klass and klass != "git":
@@ -116,6 +127,8 @@ def cmd_list(args: Any | None = None) -> None:
 
 def cmd_show(name: str) -> None:
     """Show details for a single plugin, including declared emits/listens."""
+    from rich.text import Text
+
     console = _pc()._console()
     match = _pc()._find_plugin_entry(name)
     if match is None:
@@ -123,7 +136,8 @@ def cmd_show(name: str) -> None:
         _pc()._fail(console, "[dim]List installed plugins:[/dim] hermes plugins list")
 
     pname, version, description, source, dir_path, key = match
-    manifest = _pc()._read_manifest(Path(dir_path)) if dir_path else {}
+    directory = Path(dir_path) if dir_path and source != "entrypoint" else None
+    manifest = _pc()._read_manifest(directory) if directory else {}
     emits = manifest.get("emits") or []
     listens = manifest.get("listens") or []
     status = _pc()._plugin_status(pname, _pc()._get_enabled_set(), _pc()._get_disabled_set(), key=key)
@@ -133,11 +147,12 @@ def cmd_show(name: str) -> None:
         console.print(description)
     console.print(f"[dim]Status:[/dim] {status}")
     console.print(f"[dim]Source:[/dim] {source}")
+    console.print("[dim]Discovered location:[/dim]", Text(_discovered_location(source, dir_path) or "unknown"))
     console.print(f"[dim]Key:[/dim] {key}")
-    if dir_path and source != "bundled":
+    if directory and source != "bundled":
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         from hermes_cli.plugin_isolation_audit import audit_plugin_dir
-        audit = audit_plugin_dir(Path(dir_path), manifest)
+        audit = audit_plugin_dir(directory, manifest)
         runs_in = ("plugin host" if isolation_mode() == ISOLATION_HOST and audit.host_ready
                    else "refused (plugins.isolation: host)" if isolation_mode() == ISOLATION_HOST
                    else "Hermes process")

@@ -132,6 +132,9 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_list.add_argument(
         "--plain", action="store_true",
         help="Print compact plain-text output instead of a Rich table")
+    plugins_list.add_argument(
+        "--paths", action="store_true",
+        help="Show discovered plugin locations (always included in --json)")
     add_json_flag(plugins_list, "Print machine-readable JSON")
 
     plugins_enable = plugins_subparsers.add_parser("enable", help="Enable a disabled plugin")

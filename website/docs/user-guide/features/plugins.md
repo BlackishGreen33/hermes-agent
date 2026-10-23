@@ -421,6 +421,10 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 hermes plugins                               # unified interactive UI
 hermes plugins list                          # table: enabled / disabled / not enabled (bundled backends,
                                              # platforms and the live memory.provider count as enabled)
+hermes plugins list --paths                  # add discovered locations to the table
+hermes plugins list --plain --paths          # compact rows with locations appended
+hermes plugins list --json                   # includes a location field for every row
+hermes plugins show my-plugin                # details, including the discovered location
 hermes plugins search <term>                 # search the Hermes plugin catalog
 hermes plugins install <name>                # install a catalog entry (repo @ reviewed pinned SHA)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
@@ -440,6 +444,13 @@ hermes plugins check-updates                 # read-only: is any installed plugi
 hermes plugins adopt my-plugin               # track a self-cloned plugin dir (read its git origin)
 hermes plugins trust-update-url my-plugin    # confirm a changed update_url after review
 ```
+
+Locations come from discovery, not a check of code already loaded in a running agent.
+Directory locations are absolute paths with symlinks left intact; pip entry points
+retain their `module:attr` reference. Unknown locations appear as `null` in JSON
+and `unknown` in text. Without `--paths`, the table and plain listing stay compact.
+Use `hermes -p <profile> plugins list --paths` to inspect another profile's copies;
+this does not compare their contents or change plugin resolution.
 
 ### Update checks and provenance
 
